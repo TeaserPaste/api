@@ -59,7 +59,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors()); 
 app.use(express.json());
 
-// --- Logic Xử lý Snippet (Giữ nguyên) ---
+// --- Logic Xử lý Snippet (ĐÃ CẬP NHẬT) ---
 async function getSnippetData(snippetId, password) {
     const snippetRef = db.collection(SNIPPETS_COLLECTION).doc(snippetId);
     const docSnap = await snippetRef.get();
@@ -67,16 +67,15 @@ async function getSnippetData(snippetId, password) {
     if (!docSnap.exists) {
         throw new Error(`Snippet '${snippetId}' không tồn tại.`);
     }
-    // ... [Logic kiểm tra hết hạn, private, và mật khẩu unlisted] ...
     
     const data = docSnap.data();
 
-    // Kiểm tra Hết hạn
+    // ... [Logic kiểm tra hết hạn, private, và mật khẩu unlisted giữ nguyên] ...
+    const visibility = data.visibility;
+
     if (data.expiresAt && new Date(data.expiresAt) < new Date()) {
         throw new Error(`Snippet '${snippetId}' đã hết hạn.`);
     }
-
-    const visibility = data.visibility;
 
     if (visibility === 'private') {
         throw new Error(`Snippet '${snippetId}' là PRIVATE và cần xác thực người dùng.`);
@@ -91,6 +90,7 @@ async function getSnippetData(snippetId, password) {
         }
     }
     
+    // 🚨 ĐÃ BỔ SUNG: Đảm bảo trả về trường isVerified
     return { 
         id: docSnap.id,
         title: data.title || 'Untitled',
@@ -98,7 +98,8 @@ async function getSnippetData(snippetId, password) {
         language: data.language || 'plaintext',
         creatorName: data.creatorName || 'Unknown',
         tags: data.tags || [],
-        visibility: visibility
+        visibility: visibility,
+        isVerified: data.isVerified || false // Thêm trường này vào response
     };
 }
 
