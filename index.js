@@ -159,7 +159,6 @@ app.post('/getSnippet', async (req, res) => {
 
 // --- API ROUTE MỚI: GET /getUserInfo ---
 app.get('/getUserInfo', async (req, res) => {
-    // Middleware 'apiKeyAuth' đã chạy trước đó và đính kèm 'req.userAuth' nếu key hợp lệ
     if (!req.userAuth || !req.userAuth.userId) {
         return res.status(401).send({ error: 'Yêu cầu cần có API key hợp lệ (public hoặc private).' });
     }
@@ -175,12 +174,12 @@ app.get('/getUserInfo', async (req, res) => {
 
         const userData = userSnap.data();
 
-        // Chỉ trả về các thông tin public, không trả về email hay các thông tin nhạy cảm khác
+        // Chỉ trả về các thông tin public theo đúng yêu cầu của bạn.
         const publicUserInfo = {
             userId: userSnap.id,
             displayName: userData.displayName || 'Anonymous',
-            photoURL: userData.photoURL || null,
-            isVerified: userData.isVerified || false
+            photoURL: userData.photoURL || null
+            // Dòng 'isVerified' đã được xóa bỏ.
         };
 
         return res.status(200).send(publicUserInfo);
