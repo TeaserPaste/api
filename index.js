@@ -51,7 +51,8 @@ const apiKeyAuth = async (req, res, next) => {
         if (!apiKey) {
             return res.status(401).send({ error: 'Định dạng API Key không hợp lệ.' });
         }
-        const keysSnapshot = await db.collection(API_KEYS_COLlection).get();
+        // SỬA LỖI: API_KEYS_COLlection -> API_KEYS_COLLECTION
+        const keysSnapshot = await db.collection(API_KEYS_COLLECTION).get();
         let userAuth = null;
         for (const doc of keysSnapshot.docs) {
             const data = doc.data();
