@@ -5,11 +5,9 @@ const express = require('express');
 const cors = require('cors');
 
 // --- 1. KHỞI TẠO FIREBASE ADMIN SDK ---
-// Đảm bảo bạn đã thiết lập các biến môi trường này trên Vercel
 let serviceAccountCredentials;
 try {
     const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n');
-    
     serviceAccountCredentials = {
         type: 'service_account',
         project_id: process.env.FIREBASE_PROJECT_ID,
@@ -26,18 +24,15 @@ try {
     console.error("❌ Lỗi Config: Hãy chắc chắn rằng bạn đã thiết lập đầy đủ các biến môi trường FIREBASE_* trên Vercel.", e);
 }
 
-// Khởi tạo app chỉ một lần duy nhất
 if (!admin.apps.length) {
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccountCredentials),
     });
-    console.log("✅ Firebase Admin SDK initialized for Vercel.");
 }
 
 const db = admin.firestore();
 const app = express();
 
-// Định nghĩa tên các collection
 const SNIPPETS_COLLECTION = 'snippets';
 const API_KEYS_COLLECTION = 'apiKeys';
 const USERS_COLLECTION = 'users';
@@ -46,316 +41,195 @@ const USERS_COLLECTION = 'users';
 app.use(cors()); 
 app.use(express.json());
 
-// Middleware xác thực API key (public/private)
 const apiKeyAuth = async (req, res, next) => {
     try {
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
-            // Không có token, vẫn cho qua để xử lý các request public
             return next();
         }
-
         const apiKey = authHeader.split(' ')[1];
         if (!apiKey) {
             return res.status(401).send({ error: 'Định dạng API Key không hợp lệ.' });
         }
-
         const keysSnapshot = await db.collection(API_KEYS_COLLECTION).get();
         let userAuth = null;
-
         for (const doc of keysSnapshot.docs) {
             const data = doc.data();
-            if (data.publicKey === apiKey) {
-                userAuth = { userId: doc.id, type: 'public' };
-                break;
-            }
-            if (data.privateKey === apiKey) {
-                userAuth = { userId: doc.id, type: 'private' };
-                break;
-            }
+            if (data.publicKey === apiKey) { userAuth = { userId: doc.id, type: 'public' }; break; }
+            if (data.privateKey === apiKey) { userAuth = { userId: doc.id, type: 'private' }; break; }
         }
-
         if (!userAuth) {
             return res.status(403).send({ error: 'API Key không hợp lệ hoặc đã hết hạn.' });
         }
-
-        req.userAuth = userAuth; // Gắn thông tin xác thực vào request
+        req.userAuth = userAuth;
         next();
     } catch (error) {
-        console.error("Lỗi middleware apiKeyAuth:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi xác thực API key.' });
     }
 };
-
-app.use(apiKeyAuth); // Áp dụng middleware cho tất cả các route
+app.use(apiKeyAuth);
 
 // --- 3. CÁC ROUTES API ---
 
-/**
- * @route   POST /getSnippet
- * @desc    Lấy thông tin một snippet, hỗ trợ bypass mật khẩu cho chủ sở hữu.
- */
 app.post('/getSnippet', async (req, res) => {
     const { snippetId, password } = req.body;
-    if (!snippetId) {
-        return res.status(400).send({ error: 'Thiếu snippetId.' });
-    }
-
+    if (!snippetId) return res.status(400).send({ error: 'Thiếu snippetId.' });
     try {
         const docSnap = await db.collection(SNIPPETS_COLLECTION).doc(snippetId).get();
-        if (!docSnap.exists) {
-            return res.status(404).send({ error: `Snippet '${snippetId}' không tồn tại.` });
-        }
-        
+        if (!docSnap.exists) return res.status(404).send({ error: `Snippet '${snippetId}' không tồn tại.` });
         const data = docSnap.data();
         const isOwner = req.userAuth && req.userAuth.userId === data.creatorId;
-
-        // Kiểm tra quyền truy cập
         if (data.visibility === 'private' && (!isOwner || req.userAuth.type !== 'private')) {
-            return res.status(403).send({ error: `Snippet '${snippetId}' là PRIVATE và bạn không có quyền truy cập.` });
+            return res.status(403).send({ error: `Snippet là PRIVATE và bạn không có quyền truy cập.` });
         }
-
         let passwordBypassed = false;
         if (data.visibility === 'unlisted' && data.password && data.password.length > 0) {
-            // Chủ sở hữu dùng private key có thể bypass mật khẩu
-            if (isOwner && req.userAuth.type === 'private') {
-                passwordBypassed = true;
-            } else if (password !== data.password) {
-                if (!password) {
-                    return res.status(401).send({ error: 'Snippet này cần mật khẩu.', requiresPassword: true });
-                }
+            if (isOwner && req.userAuth.type === 'private') { passwordBypassed = true; } 
+            else if (password !== data.password) {
+                if (!password) return res.status(401).send({ error: 'Snippet này cần mật khẩu.', requiresPassword: true });
                 return res.status(403).send({ error: 'Mật khẩu không chính xác.' });
             }
         }
-        
-        const responseData = {
-            id: docSnap.id,
-            title: data.title || 'Untitled',
-            content: data.content || '',
-            language: data.language || 'plaintext',
-            creatorName: data.creatorName || 'Unknown',
-            tags: data.tags || [],
-            visibility: data.visibility,
-            isVerified: data.isVerified || false,
-            passwordBypassed // Trả về trạng thái bypass
-        };
-
+        const responseData = { id: docSnap.id, ...data, passwordBypassed };
         return res.status(200).send(responseData);
     } catch (error) {
-        console.error("Lỗi route /getSnippet:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi lấy snippet.' });
     }
 });
 
-/**
- * @route   GET /getUserInfo
- * @desc    Lấy thông tin public của người dùng qua API key.
- */
 app.get('/getUserInfo', async (req, res) => {
-    if (!req.userAuth || !req.userAuth.userId) {
-        return res.status(401).send({ error: 'Yêu cầu cần có API key hợp lệ (public hoặc private).' });
-    }
-
+    if (!req.userAuth || !req.userAuth.userId) return res.status(401).send({ error: 'Yêu cầu cần có API key hợp lệ.' });
     try {
         const userRef = db.collection(USERS_COLLECTION).doc(req.userAuth.userId);
         const userSnap = await userRef.get();
-
-        if (!userSnap.exists) {
-            return res.status(404).send({ error: 'Không tìm thấy người dùng tương ứng với API key này.' });
-        }
-
+        if (!userSnap.exists) return res.status(404).send({ error: 'Không tìm thấy người dùng.' });
         const userData = userSnap.data();
-        const publicUserInfo = {
-            userId: userSnap.id,
-            displayName: userData.displayName || 'Anonymous',
-            photoURL: userData.photoURL || null,
-        };
-
+        const publicUserInfo = { userId: userSnap.id, displayName: userData.displayName || 'Anonymous', photoURL: userData.photoURL || null };
         return res.status(200).send(publicUserInfo);
     } catch (error) {
-        console.error("Lỗi route /getUserInfo:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi truy vấn thông tin người dùng.' });
     }
 });
 
-/**
- * @route   POST /createSnippet
- * @desc    Tạo một snippet mới, yêu cầu private key.
- */
 app.post('/createSnippet', async (req, res) => {
-    if (!req.userAuth || req.userAuth.type !== 'private') {
-        return res.status(403).send({ error: 'Cần có private key để tạo snippet.' });
-    }
-
+    if (!req.userAuth || req.userAuth.type !== 'private') return res.status(403).send({ error: 'Cần có private key để tạo snippet.' });
     try {
         const { title, content, language = 'plaintext', visibility = 'unlisted', tags = [], password = '' } = req.body;
-
-        if (!title || !content) {
-            return res.status(400).send({ error: 'Tiêu đề và nội dung là bắt buộc.' });
-        }
-        
+        if (!title || !content) return res.status(400).send({ error: 'Tiêu đề và nội dung là bắt buộc.' });
         const userRef = await db.collection(USERS_COLLECTION).doc(req.userAuth.userId).get();
-        if (!userRef.exists) {
-            return res.status(404).send({ error: 'Người dùng không tồn tại.' });
-        }
-        
-        const newSnippetData = {
-            title,
-            content,
-            language,
-            visibility,
-            tags: Array.isArray(tags) ? tags : [],
-            password: visibility === 'unlisted' ? password : '',
-            creatorId: req.userAuth.userId,
-            creatorName: userRef.data().displayName || 'Anonymous',
-            createdAt: new Date(),
-            expiresAt: null,
-            hasSensitiveContent: false,
-            isVerified: false // Snippet mới tạo qua API mặc định là không verified
-        };
-
+        if (!userRef.exists) return res.status(404).send({ error: 'Người dùng không tồn tại.' });
+        const newSnippetData = { title, content, language, visibility, tags: Array.isArray(tags) ? tags : [], password: visibility === 'unlisted' ? password : '', creatorId: req.userAuth.userId, creatorName: userRef.data().displayName || 'Anonymous', createdAt: new Date(), expiresAt: null, hasSensitiveContent: false, isVerified: false };
         const docRef = await db.collection(SNIPPETS_COLLECTION).add(newSnippetData);
-
         return res.status(201).send({ id: docRef.id, ...newSnippetData });
     } catch (error) {
-        console.error("Lỗi route /createSnippet:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi tạo snippet.' });
     }
 });
 
-/**
- * @route   GET /listSnippets
- * @desc    Liệt kê các snippet của người dùng, yêu cầu private key.
- */
-app.get('/listSnippets', async (req, res) => {
-    if (!req.userAuth || req.userAuth.type !== 'private') {
-        return res.status(403).send({ error: 'Cần có private key để liệt kê snippets.' });
-    }
-
-    try {
-        const { limit = 20, visibility } = req.query;
-        const userId = req.userAuth.userId;
-
-        let query = db.collection(SNIPPETS_COLLECTION)
-            .where('creatorId', '==', userId)
-            .orderBy('createdAt', 'desc') // Sắp xếp theo ngày tạo mới nhất
-            .limit(parseInt(limit));
-
-        if (visibility && ['public', 'unlisted', 'private'].includes(visibility)) {
-            query = query.where('visibility', '==', visibility);
-        }
-
-        const snapshot = await query.get();
-
-        if (snapshot.empty) {
-            return res.status(200).send([]);
-        }
-
-        // Chỉ trả về các trường cần thiết cho danh sách, không trả về content
-        const snippets = snapshot.docs.map(doc => {
-            const data = doc.data();
-            return {
-                id: doc.id,
-                title: data.title,
-                visibility: data.visibility,
-                language: data.language,
-                createdAt: data.createdAt.toDate().toISOString(),
-            };
-        });
-
-        return res.status(200).send(snippets);
-
-    } catch (error) {
-        console.error("Lỗi route /listSnippets:", error);
-        return res.status(500).send({ error: 'Lỗi máy chủ khi liệt kê snippets.' });
-    }
-});
-
-/**
- * @route   PATCH /updateSnippet
- * @desc    Cập nhật một snippet, yêu cầu private key và quyền sở hữu.
- */
 app.patch('/updateSnippet', async (req, res) => {
-    if (!req.userAuth || req.userAuth.type !== 'private') {
-        return res.status(403).send({ error: 'Cần có private key để cập nhật snippet.' });
-    }
-
+    if (!req.userAuth || req.userAuth.type !== 'private') return res.status(403).send({ error: 'Cần có private key để cập nhật snippet.' });
     try {
         const { snippetId, updates } = req.body;
-        if (!snippetId || !updates) {
-            return res.status(400).send({ error: 'Thiếu ID snippet hoặc dữ liệu cập nhật.' });
-        }
-
+        if (!snippetId || !updates) return res.status(400).send({ error: 'Thiếu ID snippet hoặc dữ liệu cập nhật.' });
         const snippetRef = db.collection(SNIPPETS_COLLECTION).doc(snippetId);
         const docSnap = await snippetRef.get();
-
-        if (!docSnap.exists) {
-            return res.status(404).send({ error: 'Snippet không tồn tại.' });
-        }
-
-        if (docSnap.data().creatorId !== req.userAuth.userId) {
-            return res.status(403).send({ error: 'Bạn không có quyền chỉnh sửa snippet này.' });
-        }
-
-        // Chỉ cho phép cập nhật các trường hợp lệ
+        if (!docSnap.exists) return res.status(404).send({ error: 'Snippet không tồn tại.' });
+        if (docSnap.data().creatorId !== req.userAuth.userId) return res.status(403).send({ error: 'Bạn không có quyền chỉnh sửa snippet này.' });
         const allowedUpdates = ['title', 'content', 'language', 'visibility', 'password', 'tags'];
         const validUpdates = {};
-        for (const key of Object.keys(updates)) {
-            if (allowedUpdates.includes(key)) {
-                validUpdates[key] = updates[key];
-            }
-        }
-        
-        if (Object.keys(validUpdates).length === 0) {
-             return res.status(400).send({ error: 'Không có trường hợp lệ nào để cập nhật.' });
-        }
-
+        for (const key of Object.keys(updates)) { if (allowedUpdates.includes(key)) validUpdates[key] = updates[key]; }
+        if (Object.keys(validUpdates).length === 0) return res.status(400).send({ error: 'Không có trường hợp lệ nào để cập nhật.' });
         await snippetRef.update(validUpdates);
         const updatedDoc = await snippetRef.get();
-
         return res.status(200).send({ id: updatedDoc.id, ...updatedDoc.data() });
-
     } catch (error) {
-        console.error("Lỗi route /updateSnippet:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi cập nhật snippet.' });
     }
 });
 
-/**
- * @route   DELETE /deleteSnippet
- * @desc    Xóa một snippet, yêu cầu private key và quyền sở hữu.
- */
 app.delete('/deleteSnippet', async (req, res) => {
-     if (!req.userAuth || req.userAuth.type !== 'private') {
-        return res.status(403).send({ error: 'Cần có private key để xóa snippet.' });
-    }
-    
+    if (!req.userAuth || req.userAuth.type !== 'private') return res.status(403).send({ error: 'Cần có private key để xóa snippet.' });
     try {
         const { snippetId } = req.body;
-         if (!snippetId) {
-            return res.status(400).send({ error: 'Thiếu ID snippet.' });
-        }
-        
+        if (!snippetId) return res.status(400).send({ error: 'Thiếu ID snippet.' });
         const snippetRef = db.collection(SNIPPETS_COLLECTION).doc(snippetId);
         const docSnap = await snippetRef.get();
-
-        if (!docSnap.exists) {
-            return res.status(404).send({ error: 'Snippet không tồn tại.' });
-        }
-
-        if (docSnap.data().creatorId !== req.userAuth.userId) {
-            return res.status(403).send({ error: 'Bạn không có quyền xóa snippet này.' });
-        }
-        
+        if (!docSnap.exists) return res.status(404).send({ error: 'Snippet không tồn tại.' });
+        if (docSnap.data().creatorId !== req.userAuth.userId) return res.status(403).send({ error: 'Bạn không có quyền xóa snippet này.' });
         await snippetRef.delete();
-        
         return res.status(200).send({ message: `Snippet '${snippetId}' đã được xóa thành công.` });
-
     } catch (error) {
-         console.error("Lỗi route /deleteSnippet:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi xóa snippet.' });
+    }
+});
+
+// ROUTE SỬA LỖI 404 CHO 'tp list'
+app.post('/listSnippets', async (req, res) => {
+    if (!req.userAuth || req.userAuth.type !== 'private') return res.status(403).send({ error: 'Cần có private key để liệt kê snippets.' });
+    try {
+        const { limit = 20, visibility } = req.body;
+        let query = db.collection(SNIPPETS_COLLECTION).where('creatorId', '==', req.userAuth.userId);
+        if (visibility) query = query.where('visibility', '==', visibility);
+        const snapshot = await query.orderBy('createdAt', 'desc').limit(limit).get();
+        const snippets = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        return res.status(200).send(snippets);
+    } catch (error) {
+        return res.status(500).send({ error: 'Lỗi máy chủ khi liệt kê snippets.' });
+    }
+});
+
+// ROUTE MỚI CHO 'tp user view -s'
+app.post('/getUserPublicSnippets', async (req, res) => {
+    try {
+        const { userId } = req.body;
+        if (!userId) return res.status(400).send({ error: 'Thiếu userId.' });
+        const snapshot = await db.collection(SNIPPETS_COLLECTION)
+            .where('creatorId', '==', userId)
+            .where('visibility', '==', 'public')
+            .orderBy('createdAt', 'desc')
+            .limit(20)
+            .get();
+        const snippets = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        return res.status(200).send(snippets);
+    } catch (error) {
+        return res.status(500).send({ error: 'Lỗi máy chủ khi lấy public snippets.' });
+    }
+});
+
+// ROUTE MỚI CHO 'tp search'
+app.post('/searchSnippets', async (req, res) => {
+    try {
+        const { term } = req.body;
+        if (!term) return res.status(400).send({ error: 'Thiếu từ khóa tìm kiếm.' });
+        
+        const lowerCaseTerm = term.toLowerCase();
+
+        // Firestore không hỗ trợ tìm kiếm text hiệu quả, đây là một cách tiếp cận đơn giản
+        // Tìm kiếm trên 'tags' (kết quả chính xác)
+        const tagsQuery = db.collection(SNIPPETS_COLLECTION)
+            .where('visibility', '==', 'public')
+            .where('tags', 'array-contains', lowerCaseTerm);
+        
+        // Tìm kiếm trên 'title' (chỉ tìm các từ bắt đầu bằng term)
+        const titleQuery = db.collection(SNIPPETS_COLLECTION)
+            .where('visibility', '==', 'public')
+            .orderBy('title')
+            .startAt(lowerCaseTerm)
+            .endAt(lowerCaseTerm + '\uf8ff');
+
+        const [tagsSnapshot, titleSnapshot] = await Promise.all([tagsQuery.get(), titleQuery.get()]);
+
+        const resultsMap = new Map();
+        tagsSnapshot.docs.forEach(doc => resultsMap.set(doc.id, { id: doc.id, ...doc.data() }));
+        titleSnapshot.docs.forEach(doc => resultsMap.set(doc.id, { id: doc.id, ...doc.data() }));
+        
+        const results = Array.from(resultsMap.values());
+        return res.status(200).send(results);
+    } catch (error) {
+        return res.status(500).send({ error: 'Lỗi máy chủ khi tìm kiếm.' });
     }
 });
 
 // --- 4. EXPORT APP CHO VERCEL ---
 module.exports = app;
+
