@@ -156,6 +156,39 @@ app.post('/getSnippet', async (req, res) => {
     }
 });
 
+// --- API ROUTE MỚI: GET /getUserInfo ---
+app.get('/getUserInfo', async (req, res) => {
+    // Middleware 'apiKeyAuth' đã chạy trước đó và đính kèm 'req.userAuth' nếu key hợp lệ
+    if (!req.userAuth || !req.userAuth.userId) {
+        return res.status(401).send({ error: 'Yêu cầu cần có API key hợp lệ (public hoặc private).' });
+    }
+
+    try {
+        const userId = req.userAuth.userId;
+        const userRef = db.collection(USERS_COLLECTION).doc(userId);
+        const userSnap = await userRef.get();
+
+        if (!userSnap.exists) {
+            return res.status(404).send({ error: 'Không tìm thấy người dùng tương ứng với API key này.' });
+        }
+
+        const userData = userSnap.data();
+
+        // Chỉ trả về các thông tin public, không trả về email hay các thông tin nhạy cảm khác
+        const publicUserInfo = {
+            userId: userSnap.id,
+            displayName: userData.displayName || 'Anonymous',
+            photoURL: userData.photoURL || null,
+            isVerified: userData.isVerified || false
+        };
+
+        return res.status(200).send(publicUserInfo);
+
+    } catch (error) {
+        console.error("Lỗi khi lấy thông tin người dùng:", error);
+        return res.status(500).send({ error: 'Lỗi máy chủ khi truy vấn thông tin người dùng.' });
+    }
+});
 
 // --- EXPORT APP CHO VERCEL ---
 // Vercel sẽ sử dụng module export này để chạy serverless function.
