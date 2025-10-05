@@ -3,61 +3,53 @@ const admin = require('firebase-admin');
 const express = require('express');
 const cors = require('cors');
 
-// Tải biến môi trường từ file .env (chỉ dùng khi chạy local)
-require('dotenv').config();
-
-// --- TẢI CONFIGURATION DỰA TRÊN BIẾN MÔI TRƯỜNG ---
+// --- TẢI CONFIGURATION TỪ VERCEL ENVIRONMENT VARIABLES ---
 let serviceAccountCredentials;
 
-if (process.env.FIREBASE_CONFIG_JSON) {
-    try {
-        serviceAccountCredentials = JSON.parse(process.env.FIREBASE_CONFIG_JSON);
-        console.log("✅ Config: Đã tải cấu hình Admin SDK từ biến FIREBASE_CONFIG_JSON.");
-    } catch (e) {
-        console.error("❌ Lỗi Config: Không thể phân tích JSON từ FIREBASE_CONFIG_JSON.");
-        process.exit(1);
-    }
-} else if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_PRIVATE_KEY) {
+// Vercel sẽ tự động cung cấp các biến môi trường này
+// Bạn cần setup chúng trong phần Settings > Environment Variables của project trên Vercel
+try {
     const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n');
     
     serviceAccountCredentials = {
         type: 'service_account',
         project_id: process.env.FIREBASE_PROJECT_ID,
-        private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID || '',
+        private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
         private_key: privateKey,
-        client_email: process.env.FIREBASE_CLIENT_EMAIL || '',
-        client_id: process.env.FIREBASE_CLIENT_ID || '',
+        client_email: process.env.FIREBASE_CLIENT_EMAIL,
+        client_id: process.env.FIREBASE_CLIENT_ID,
         auth_uri: 'https://accounts.google.com/o/oauth2/auth',
         token_uri: 'https://oauth2.googleapis.com/token',
-        auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
+        auth_provider_x5509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
         client_x509_cert_url: `https://www.googleapis.com/robot/v1/metadata/x509/${encodeURIComponent(process.env.FIREBASE_CLIENT_EMAIL)}`,
     };
-    console.log("✅ Config: Đã tải cấu hình Admin SDK từ các biến môi trường riêng lẻ.");
-} else {
-    console.error("❌ Lỗi Config: Không tìm thấy biến môi trường cần thiết (FIREBASE_CONFIG_JSON hoặc các trường riêng lẻ).");
-    process.exit(1);
+    console.log("✅ Config: Đã tải cấu hình Admin SDK từ Vercel Environment Variables.");
+} catch (e) {
+    console.error("❌ Lỗi Config: Hãy chắc chắn rằng bạn đã thiết lập đầy đủ các biến môi trường FIREBASE_* trên Vercel.", e);
+    // Không thoát process ở đây để Vercel có thể xử lý lỗi
 }
 
-// --- KHỞI TẠO ADMIN SDK VỚI CREDENTIALS TỪ BIẾN MÔI TRƯỜNG ---
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccountCredentials),
-});
+// --- KHỞI TẠO ADMIN SDK (CHỈ MỘT LẦN) ---
+if (!admin.apps.length) {
+    admin.initializeApp({
+        credential: admin.credential.cert(serviceAccountCredentials),
+    });
+    console.log("✅ Firebase Admin SDK initialized.");
+}
 
 const db = admin.firestore();
 const app = express();
 const SNIPPETS_COLLECTION = 'snippets';
 const API_KEYS_COLLECTION = 'apiKeys';
-const PORT = process.env.PORT || 3000;
 
 // --- MIDDLEWARE ---
 app.use(cors()); 
 app.use(express.json());
 
-// --- MIDDLEWARE XÁC THỰC API KEY (MỚI) ---
+// --- MIDDLEWARE XÁC THỰC API KEY ---
 const apiKeyAuth = async (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        // Không có API key, tiếp tục xử lý bình thường (cho các snippet public/unlisted không cần key)
         return next();
     }
 
@@ -94,9 +86,9 @@ const apiKeyAuth = async (req, res, next) => {
     }
 };
 
-app.use(apiKeyAuth); // Áp dụng middleware cho tất cả các request
+app.use(apiKeyAuth); // Áp dụng middleware
 
-// --- Logic Xử lý Snippet (ĐÃ CẬP NHẬT) ---
+// --- Logic Xử lý Snippet ---
 async function getSnippetData(snippetId, password, userAuth) {
     const snippetRef = db.collection(SNIPPETS_COLLECTION).doc(snippetId);
     const docSnap = await snippetRef.get();
@@ -120,18 +112,12 @@ async function getSnippetData(snippetId, password, userAuth) {
         }
     }
 
-    if (visibility === 'unlisted') {
-        if (data.password && data.password.length > 0) {
-            if (!password) {
-                throw new Error('REQUIRED_PASSWORD');
-            }
-            if (password !== data.password) {
-                throw new Error(`Mật khẩu không chính xác.`);
-            }
-        } else if (!isOwner && visibility === 'unlisted') {
-            // Unlisted snippets without a password are still accessible via link, but might be restricted via API
-            // Depending on your logic, you might want to allow public keys here or not.
-            // For now, we'll allow it.
+    if (visibility === 'unlisted' && data.password && data.password.length > 0) {
+        if (!password) {
+            throw new Error('REQUIRED_PASSWORD');
+        }
+        if (password !== data.password) {
+            throw new Error(`Mật khẩu không chính xác.`);
         }
     }
     
@@ -147,7 +133,7 @@ async function getSnippetData(snippetId, password, userAuth) {
     };
 }
 
-// --- API ROUTE: POST /getSnippet (ĐÃ CẬP NHẬT) ---
+// --- API ROUTE: POST /getSnippet ---
 app.post('/getSnippet', async (req, res) => {
     const { snippetId, password } = req.body;
 
@@ -170,10 +156,7 @@ app.post('/getSnippet', async (req, res) => {
     }
 });
 
-// --- START SERVER ---
-app.listen(PORT, () => {
-  console.log(`\n🎉 TeaserPaste API Server đang chạy tại http://localhost:${PORT}`);
-  console.log(`BASE_API_URL cho CLI: http://localhost:${PORT}`);
-});PORT}`);
-  console.log(`BASE_API_URL cho CLI: http://localhost:${PORT}`);
-});
+
+// --- EXPORT APP CHO VERCEL ---
+// Vercel sẽ sử dụng module export này để chạy serverless function.
+module.exports = app;
