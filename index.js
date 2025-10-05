@@ -223,5 +223,53 @@ app.post('/createSnippet', async (req, res) => {
     }
 });
 
+/**
+ * @route   GET /listSnippets
+ * @desc    Liệt kê các snippet của người dùng, yêu cầu private key.
+ */
+app.get('/listSnippets', async (req, res) => {
+    if (!req.userAuth || req.userAuth.type !== 'private') {
+        return res.status(403).send({ error: 'Cần có private key để liệt kê snippets.' });
+    }
+
+    try {
+        const { limit = 20, visibility } = req.query;
+        const userId = req.userAuth.userId;
+
+        let query = db.collection(SNIPPETS_COLLECTION)
+            .where('creatorId', '==', userId)
+            .orderBy('createdAt', 'desc') // Sắp xếp theo ngày tạo mới nhất
+            .limit(parseInt(limit));
+
+        if (visibility && ['public', 'unlisted', 'private'].includes(visibility)) {
+            query = query.where('visibility', '==', visibility);
+        }
+
+        const snapshot = await query.get();
+
+        if (snapshot.empty) {
+            return res.status(200).send([]);
+        }
+
+        // Chỉ trả về các trường cần thiết cho danh sách, không trả về content
+        const snippets = snapshot.docs.map(doc => {
+            const data = doc.data();
+            return {
+                id: doc.id,
+                title: data.title,
+                visibility: data.visibility,
+                language: data.language,
+                createdAt: data.createdAt.toDate().toISOString(),
+            };
+        });
+
+        return res.status(200).send(snippets);
+
+    } catch (error) {
+        console.error("Lỗi route /listSnippets:", error);
+        return res.status(500).send({ error: 'Lỗi máy chủ khi liệt kê snippets.' });
+    }
+});
+
 // --- 4. EXPORT APP CHO VERCEL ---
 module.exports = app;
