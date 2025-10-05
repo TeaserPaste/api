@@ -51,7 +51,7 @@ const apiKeyAuth = async (req, res, next) => {
         if (!apiKey) {
             return res.status(401).send({ error: 'Định dạng API Key không hợp lệ.' });
         }
-        const keysSnapshot = await db.collection(API_KEYS_COLLECTION).get();
+        const keysSnapshot = await db.collection(API_KEYS_COLlection).get();
         let userAuth = null;
         for (const doc of keysSnapshot.docs) {
             const data = doc.data();
@@ -111,17 +111,44 @@ app.get('/getUserInfo', async (req, res) => {
     }
 });
 
+function calculateExpiresAt(expires) {
+    if (!expires) return null;
+    const unit = expires.slice(-1).toLowerCase();
+    const value = parseInt(expires.slice(0, -1), 10);
+    if (isNaN(value)) return null;
+
+    const now = new Date();
+    if (unit === 'h') now.setHours(now.getHours() + value);
+    else if (unit === 'd') now.setDate(now.getDate() + value);
+    else if (unit === 'w') now.setDate(now.getDate() + (value * 7));
+    else return null;
+    return now;
+}
+
 app.post('/createSnippet', async (req, res) => {
     if (!req.userAuth || req.userAuth.type !== 'private') return res.status(403).send({ error: 'Cần có private key để tạo snippet.' });
     try {
-        const { title, content, language = 'plaintext', visibility = 'unlisted', tags = [], password = '' } = req.body;
+        const { title, content, language = 'plaintext', visibility = 'unlisted', tags = [], password = '', expires = null } = req.body;
         if (!title || !content) return res.status(400).send({ error: 'Tiêu đề và nội dung là bắt buộc.' });
         const userRef = await db.collection(USERS_COLLECTION).doc(req.userAuth.userId).get();
         if (!userRef.exists) return res.status(404).send({ error: 'Người dùng không tồn tại.' });
-        const newSnippetData = { title, content, language, visibility, tags: Array.isArray(tags) ? tags : [], password: visibility === 'unlisted' ? password : '', creatorId: req.userAuth.userId, creatorName: userRef.data().displayName || 'Anonymous', createdAt: new Date(), expiresAt: null, hasSensitiveContent: false, isVerified: false };
+        
+        const newSnippetData = { 
+            title, content, language, visibility, 
+            tags: Array.isArray(tags) ? tags : [], 
+            password: visibility === 'unlisted' ? password : '', 
+            creatorId: req.userAuth.userId, 
+            creatorName: userRef.data().displayName || 'Anonymous', 
+            createdAt: new Date(), 
+            expiresAt: calculateExpiresAt(expires), 
+            hasSensitiveContent: false, 
+            isVerified: false 
+        };
+
         const docRef = await db.collection(SNIPPETS_COLLECTION).add(newSnippetData);
         return res.status(201).send({ id: docRef.id, ...newSnippetData });
     } catch (error) {
+        console.error("Lỗi route /createSnippet:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi tạo snippet.' });
     }
 });
@@ -135,10 +162,12 @@ app.patch('/updateSnippet', async (req, res) => {
         const docSnap = await snippetRef.get();
         if (!docSnap.exists) return res.status(404).send({ error: 'Snippet không tồn tại.' });
         if (docSnap.data().creatorId !== req.userAuth.userId) return res.status(403).send({ error: 'Bạn không có quyền chỉnh sửa snippet này.' });
+        
         const allowedUpdates = ['title', 'content', 'language', 'visibility', 'password', 'tags'];
         const validUpdates = {};
         for (const key of Object.keys(updates)) { if (allowedUpdates.includes(key)) validUpdates[key] = updates[key]; }
         if (Object.keys(validUpdates).length === 0) return res.status(400).send({ error: 'Không có trường hợp lệ nào để cập nhật.' });
+        
         await snippetRef.update(validUpdates);
         const updatedDoc = await snippetRef.get();
         return res.status(200).send({ id: updatedDoc.id, ...updatedDoc.data() });
@@ -163,7 +192,6 @@ app.delete('/deleteSnippet', async (req, res) => {
     }
 });
 
-// ROUTE SỬA LỖI 404 CHO 'tp list'
 app.post('/listSnippets', async (req, res) => {
     if (!req.userAuth || req.userAuth.type !== 'private') return res.status(403).send({ error: 'Cần có private key để liệt kê snippets.' });
     try {
@@ -178,7 +206,6 @@ app.post('/listSnippets', async (req, res) => {
     }
 });
 
-// ROUTE MỚI CHO 'tp user view -s'
 app.post('/getUserPublicSnippets', async (req, res) => {
     try {
         const { userId } = req.body;
@@ -196,40 +223,42 @@ app.post('/getUserPublicSnippets', async (req, res) => {
     }
 });
 
-// ROUTE MỚI CHO 'tp search'
 app.post('/searchSnippets', async (req, res) => {
     try {
         const { term } = req.body;
         if (!term) return res.status(400).send({ error: 'Thiếu từ khóa tìm kiếm.' });
         
         const lowerCaseTerm = term.toLowerCase();
-
-        // Firestore không hỗ trợ tìm kiếm text hiệu quả, đây là một cách tiếp cận đơn giản
-        // Tìm kiếm trên 'tags' (kết quả chính xác)
+        
         const tagsQuery = db.collection(SNIPPETS_COLLECTION)
             .where('visibility', '==', 'public')
             .where('tags', 'array-contains', lowerCaseTerm);
-        
-        // Tìm kiếm trên 'title' (chỉ tìm các từ bắt đầu bằng term)
+            
+        // Firestore không hỗ trợ OR query phức tạp. Chúng ta sẽ chạy 2 query và gộp kết quả.
+        // Đây là cách đơn giản nhất, với lượng dữ liệu lớn cần giải pháp tìm kiếm chuyên dụng hơn (เช่น Algolia, Typesense).
         const titleQuery = db.collection(SNIPPETS_COLLECTION)
-            .where('visibility', '==', 'public')
-            .orderBy('title')
-            .startAt(lowerCaseTerm)
-            .endAt(lowerCaseTerm + '\uf8ff');
+             .where('visibility', '==', 'public');
 
         const [tagsSnapshot, titleSnapshot] = await Promise.all([tagsQuery.get(), titleQuery.get()]);
 
         const resultsMap = new Map();
         tagsSnapshot.docs.forEach(doc => resultsMap.set(doc.id, { id: doc.id, ...doc.data() }));
-        titleSnapshot.docs.forEach(doc => resultsMap.set(doc.id, { id: doc.id, ...doc.data() }));
+        
+        // Lọc title thủ công vì Firestore không hỗ trợ contains/lowercase search
+        titleSnapshot.docs.forEach(doc => {
+            const data = doc.data();
+            if (data.title && data.title.toLowerCase().includes(lowerCaseTerm)) {
+                 resultsMap.set(doc.id, { id: doc.id, ...data });
+            }
+        });
         
         const results = Array.from(resultsMap.values());
         return res.status(200).send(results);
     } catch (error) {
+        console.error("Lỗi route /searchSnippets:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi tìm kiếm.' });
     }
 });
 
 // --- 4. EXPORT APP CHO VERCEL ---
 module.exports = app;
-
