@@ -41,6 +41,7 @@ const db = admin.firestore();
 const app = express();
 const SNIPPETS_COLLECTION = 'snippets';
 const API_KEYS_COLLECTION = 'apiKeys';
+const USERS_COLLECTION = 'users';
 
 // --- MIDDLEWARE ---
 app.use(cors()); 
