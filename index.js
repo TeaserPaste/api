@@ -271,5 +271,91 @@ app.get('/listSnippets', async (req, res) => {
     }
 });
 
+/**
+ * @route   PATCH /updateSnippet
+ * @desc    Cập nhật một snippet, yêu cầu private key và quyền sở hữu.
+ */
+app.patch('/updateSnippet', async (req, res) => {
+    if (!req.userAuth || req.userAuth.type !== 'private') {
+        return res.status(403).send({ error: 'Cần có private key để cập nhật snippet.' });
+    }
+
+    try {
+        const { snippetId, updates } = req.body;
+        if (!snippetId || !updates) {
+            return res.status(400).send({ error: 'Thiếu ID snippet hoặc dữ liệu cập nhật.' });
+        }
+
+        const snippetRef = db.collection(SNIPPETS_COLLECTION).doc(snippetId);
+        const docSnap = await snippetRef.get();
+
+        if (!docSnap.exists) {
+            return res.status(404).send({ error: 'Snippet không tồn tại.' });
+        }
+
+        if (docSnap.data().creatorId !== req.userAuth.userId) {
+            return res.status(403).send({ error: 'Bạn không có quyền chỉnh sửa snippet này.' });
+        }
+
+        // Chỉ cho phép cập nhật các trường hợp lệ
+        const allowedUpdates = ['title', 'content', 'language', 'visibility', 'password', 'tags'];
+        const validUpdates = {};
+        for (const key of Object.keys(updates)) {
+            if (allowedUpdates.includes(key)) {
+                validUpdates[key] = updates[key];
+            }
+        }
+        
+        if (Object.keys(validUpdates).length === 0) {
+             return res.status(400).send({ error: 'Không có trường hợp lệ nào để cập nhật.' });
+        }
+
+        await snippetRef.update(validUpdates);
+        const updatedDoc = await snippetRef.get();
+
+        return res.status(200).send({ id: updatedDoc.id, ...updatedDoc.data() });
+
+    } catch (error) {
+        console.error("Lỗi route /updateSnippet:", error);
+        return res.status(500).send({ error: 'Lỗi máy chủ khi cập nhật snippet.' });
+    }
+});
+
+/**
+ * @route   DELETE /deleteSnippet
+ * @desc    Xóa một snippet, yêu cầu private key và quyền sở hữu.
+ */
+app.delete('/deleteSnippet', async (req, res) => {
+     if (!req.userAuth || req.userAuth.type !== 'private') {
+        return res.status(403).send({ error: 'Cần có private key để xóa snippet.' });
+    }
+    
+    try {
+        const { snippetId } = req.body;
+         if (!snippetId) {
+            return res.status(400).send({ error: 'Thiếu ID snippet.' });
+        }
+        
+        const snippetRef = db.collection(SNIPPETS_COLLECTION).doc(snippetId);
+        const docSnap = await snippetRef.get();
+
+        if (!docSnap.exists) {
+            return res.status(404).send({ error: 'Snippet không tồn tại.' });
+        }
+
+        if (docSnap.data().creatorId !== req.userAuth.userId) {
+            return res.status(403).send({ error: 'Bạn không có quyền xóa snippet này.' });
+        }
+        
+        await snippetRef.delete();
+        
+        return res.status(200).send({ message: `Snippet '${snippetId}' đã được xóa thành công.` });
+
+    } catch (error) {
+         console.error("Lỗi route /deleteSnippet:", error);
+        return res.status(500).send({ error: 'Lỗi máy chủ khi xóa snippet.' });
+    }
+});
+
 // --- 4. EXPORT APP CHO VERCEL ---
 module.exports = app;
