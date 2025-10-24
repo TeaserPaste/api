@@ -1,8 +1,9 @@
-// index.js (Phiên bản hoàn chỉnh cho Vercel)
+// index.js (Phiên bản hoàn chỉnh cho Vercel với OpenSearch)
 
 const admin = require('firebase-admin');
 const express = require('express');
 const cors = require('cors');
+const { Client } = require('@opensearch-project/opensearch'); // Thêm OpenSearch client
 
 // --- 1. KHỞI TẠO FIREBASE ADMIN SDK ---
 let serviceAccountCredentials;
@@ -21,13 +22,18 @@ try {
         client_x509_cert_url: `https://www.googleapis.com/robot/v1/metadata/x509/${encodeURIComponent(process.env.FIREBASE_CLIENT_EMAIL)}`,
     };
 } catch (e) {
-    console.error("❌ Lỗi Config: Hãy chắc chắn rằng bạn đã thiết lập đầy đủ các biến môi trường FIREBASE_* trên Vercel.", e);
+    console.error("❌ Lỗi Config Firebase: Hãy chắc chắn rằng bạn đã thiết lập đầy đủ các biến môi trường FIREBASE_* trên Vercel.", e);
 }
 
 if (!admin.apps.length) {
-    admin.initializeApp({
-        credential: admin.credential.cert(serviceAccountCredentials),
-    });
+    try {
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccountCredentials),
+        });
+        console.log("Firebase Admin SDK initialized successfully.");
+    } catch (e) {
+        console.error("❌ Failed to initialize Firebase Admin SDK:", e);
+    }
 }
 
 const db = admin.firestore();
@@ -37,11 +43,43 @@ const SNIPPETS_COLLECTION = 'snippets';
 const API_KEYS_COLLECTION = 'apiKeys';
 const USERS_COLLECTION = 'users';
 
-// --- 2. MIDDLEWARE ---
-app.use(cors()); 
+// --- 2. KHỞI TẠO OPENSEARCH CLIENT ---
+let osClient = null;
+const opensearchNode = `${process.env.OPENSEARCH_SCHEME || 'https'}://${process.env.OPENSEARCH_HOST}:${process.env.OPENSEARCH_PORT || '443'}`;
+const opensearchAuth = {
+    username: process.env.OPENSEARCH_USER,
+    password: process.env.OPENSEARCH_PASSWORD,
+};
+
+if (process.env.OPENSEARCH_HOST) {
+    try {
+        osClient = new Client({
+            node: opensearchNode,
+            auth: (opensearchAuth.username && opensearchAuth.password) ? opensearchAuth : undefined,
+            ssl: {
+                // Có thể cần cấu hình thêm nếu dùng self-signed certs
+                rejectUnauthorized: process.env.NODE_ENV === 'production', // Chỉ bật kiểm tra cert trong production
+            },
+        });
+        console.log(`OpenSearch client initialized for node: ${opensearchNode}`);
+        // Kiểm tra kết nối (tùy chọn)
+        osClient.ping()
+            .then(response => console.log('OpenSearch cluster ping successful.'))
+            .catch(error => console.warn('OpenSearch cluster ping failed:', error));
+    } catch (e) {
+        console.error("❌ Failed to initialize OpenSearch client:", e);
+    }
+} else {
+    console.warn("⚠️ OpenSearch environment variables not set. Search functionality will be disabled.");
+}
+
+
+// --- 3. MIDDLEWARE ---
+app.use(cors());
 app.use(express.json());
 
 const apiKeyAuth = async (req, res, next) => {
+    // ... (Giữ nguyên logic xác thực API key)
     try {
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -49,9 +87,9 @@ const apiKeyAuth = async (req, res, next) => {
         }
         const apiKey = authHeader.split(' ')[1];
         if (!apiKey) {
-            return res.status(401).send({ error: 'Định dạng API Key không hợp lệ.' });
+            // Không phải lỗi 401 mà chỉ là không có key, tiếp tục để các route khác xử lý
+             return next();
         }
-        // SỬA LỖI: API_KEYS_COLlection -> API_KEYS_COLLECTION
         const keysSnapshot = await db.collection(API_KEYS_COLLECTION).get();
         let userAuth = null;
         for (const doc of keysSnapshot.docs) {
@@ -59,19 +97,23 @@ const apiKeyAuth = async (req, res, next) => {
             if (data.publicKey === apiKey) { userAuth = { userId: doc.id, type: 'public' }; break; }
             if (data.privateKey === apiKey) { userAuth = { userId: doc.id, type: 'private' }; break; }
         }
-        if (!userAuth) {
-            return res.status(403).send({ error: 'API Key không hợp lệ hoặc đã hết hạn.' });
+        // Nếu cung cấp key nhưng không hợp lệ -> lỗi 403
+        if (!userAuth && apiKey) {
+             return res.status(403).send({ error: 'API Key không hợp lệ hoặc đã hết hạn.' });
         }
         req.userAuth = userAuth;
         next();
     } catch (error) {
+        console.error("API Key Auth Error:", error);
+        // Trả về lỗi 500 nếu có lỗi trong quá trình xác thực
         return res.status(500).send({ error: 'Lỗi máy chủ khi xác thực API key.' });
     }
 };
 app.use(apiKeyAuth);
 
-// --- 3. CÁC ROUTES API ---
+// --- 4. CÁC ROUTES API ---
 
+// ... (Các route getSnippet, getUserInfo, createSnippet, updateSnippet, deleteSnippet, listSnippets, getUserPublicSnippets giữ nguyên) ...
 app.post('/getSnippet', async (req, res) => {
     const { snippetId, password } = req.body;
     if (!snippetId) return res.status(400).send({ error: 'Thiếu snippetId.' });
@@ -85,15 +127,23 @@ app.post('/getSnippet', async (req, res) => {
         }
         let passwordBypassed = false;
         if (data.visibility === 'unlisted' && data.password && data.password.length > 0) {
-            if (isOwner && req.userAuth.type === 'private') { passwordBypassed = true; } 
+            if (isOwner && req.userAuth.type === 'private') { passwordBypassed = true; }
             else if (password !== data.password) {
                 if (!password) return res.status(401).send({ error: 'Snippet này cần mật khẩu.', requiresPassword: true });
                 return res.status(403).send({ error: 'Mật khẩu không chính xác.' });
             }
         }
+        // Chuyển đổi Timestamp thành ISO string nếu có
         const responseData = { id: docSnap.id, ...data, passwordBypassed };
+        if (responseData.createdAt && responseData.createdAt.toDate) {
+            responseData.createdAt = responseData.createdAt.toDate().toISOString();
+        }
+         if (responseData.expiresAt && responseData.expiresAt.toDate) {
+            responseData.expiresAt = responseData.expiresAt.toDate().toISOString();
+        }
         return res.status(200).send(responseData);
     } catch (error) {
+         console.error("Lỗi route /getSnippet:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi lấy snippet.' });
     }
 });
@@ -108,6 +158,7 @@ app.get('/getUserInfo', async (req, res) => {
         const publicUserInfo = { userId: userSnap.id, displayName: userData.displayName || 'Anonymous', photoURL: userData.photoURL || null };
         return res.status(200).send(publicUserInfo);
     } catch (error) {
+         console.error("Lỗi route /getUserInfo:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi truy vấn thông tin người dùng.' });
     }
 });
@@ -119,11 +170,12 @@ function calculateExpiresAt(expires) {
     if (isNaN(value)) return null;
 
     const now = new Date();
-    if (unit === 'h') now.setHours(now.getHours() + value);
+    if (unit === 'm') now.setMinutes(now.getMinutes() + value); // Thêm minutes
+    else if (unit === 'h') now.setHours(now.getHours() + value);
     else if (unit === 'd') now.setDate(now.getDate() + value);
     else if (unit === 'w') now.setDate(now.getDate() + (value * 7));
     else return null;
-    return now;
+    return admin.firestore.Timestamp.fromDate(now); // Trả về Timestamp
 }
 
 app.post('/createSnippet', async (req, res) => {
@@ -133,21 +185,32 @@ app.post('/createSnippet', async (req, res) => {
         if (!title || !content) return res.status(400).send({ error: 'Tiêu đề và nội dung là bắt buộc.' });
         const userRef = await db.collection(USERS_COLLECTION).doc(req.userAuth.userId).get();
         if (!userRef.exists) return res.status(404).send({ error: 'Người dùng không tồn tại.' });
-        
-        const newSnippetData = { 
-            title, content, language, visibility, 
-            tags: Array.isArray(tags) ? tags : [], 
-            password: visibility === 'unlisted' ? password : '', 
-            creatorId: req.userAuth.userId, 
-            creatorName: userRef.data().displayName || 'Anonymous', 
-            createdAt: new Date(), 
-            expiresAt: calculateExpiresAt(expires), 
-            hasSensitiveContent: false, 
-            isVerified: false 
+
+        const newSnippetData = {
+            title, content, language, visibility,
+            tags: Array.isArray(tags) ? tags : [],
+            password: visibility === 'unlisted' ? password : '',
+            creatorId: req.userAuth.userId,
+            creatorName: userRef.data().displayName || 'Anonymous',
+            creatorPhotoURL: userRef.data().photoURL || null, // Thêm photoURL
+            createdAt: admin.firestore.FieldValue.serverTimestamp(), // Dùng server timestamp
+            expiresAt: calculateExpiresAt(expires),
+            isVerified: false
         };
 
         const docRef = await db.collection(SNIPPETS_COLLECTION).add(newSnippetData);
-        return res.status(201).send({ id: docRef.id, ...newSnippetData });
+        // Lấy lại dữ liệu vừa tạo để có createdAt chính xác (nếu cần)
+        const savedDoc = await docRef.get();
+        const savedData = savedDoc.data();
+         // Chuyển đổi Timestamp thành ISO string trước khi gửi về client
+        if (savedData.createdAt && savedData.createdAt.toDate) {
+            savedData.createdAt = savedData.createdAt.toDate().toISOString();
+        }
+         if (savedData.expiresAt && savedData.expiresAt.toDate) {
+            savedData.expiresAt = savedData.expiresAt.toDate().toISOString();
+        }
+
+        return res.status(201).send({ id: docRef.id, ...savedData });
     } catch (error) {
         console.error("Lỗi route /createSnippet:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi tạo snippet.' });
@@ -163,16 +226,33 @@ app.patch('/updateSnippet', async (req, res) => {
         const docSnap = await snippetRef.get();
         if (!docSnap.exists) return res.status(404).send({ error: 'Snippet không tồn tại.' });
         if (docSnap.data().creatorId !== req.userAuth.userId) return res.status(403).send({ error: 'Bạn không có quyền chỉnh sửa snippet này.' });
-        
+
         const allowedUpdates = ['title', 'content', 'language', 'visibility', 'password', 'tags'];
         const validUpdates = {};
         for (const key of Object.keys(updates)) { if (allowedUpdates.includes(key)) validUpdates[key] = updates[key]; }
         if (Object.keys(validUpdates).length === 0) return res.status(400).send({ error: 'Không có trường hợp lệ nào để cập nhật.' });
-        
+
+        // Đảm bảo không ghi đè password nếu visibility không phải là 'unlisted'
+        if (validUpdates.visibility && validUpdates.visibility !== 'unlisted') {
+            validUpdates.password = ''; // Xóa password nếu không phải unlisted
+        } else if ('visibility' in validUpdates && validUpdates.visibility === 'unlisted' && !('password' in validUpdates)) {
+             // Giữ nguyên password cũ nếu chuyển sang unlisted mà không cung cấp password mới
+             delete validUpdates.password;
+        }
+
         await snippetRef.update(validUpdates);
         const updatedDoc = await snippetRef.get();
-        return res.status(200).send({ id: updatedDoc.id, ...updatedDoc.data() });
+        const updatedData = updatedDoc.data();
+        // Chuyển đổi Timestamp thành ISO string
+        if (updatedData.createdAt && updatedData.createdAt.toDate) {
+            updatedData.createdAt = updatedData.createdAt.toDate().toISOString();
+        }
+         if (updatedData.expiresAt && updatedData.expiresAt.toDate) {
+            updatedData.expiresAt = updatedData.expiresAt.toDate().toISOString();
+        }
+        return res.status(200).send({ id: updatedDoc.id, ...updatedData });
     } catch (error) {
+        console.error("Lỗi route /updateSnippet:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi cập nhật snippet.' });
     }
 });
@@ -189,6 +269,7 @@ app.delete('/deleteSnippet', async (req, res) => {
         await snippetRef.delete();
         return res.status(200).send({ message: `Snippet '${snippetId}' đã được xóa thành công.` });
     } catch (error) {
+        console.error("Lỗi route /deleteSnippet:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi xóa snippet.' });
     }
 });
@@ -200,9 +281,20 @@ app.post('/listSnippets', async (req, res) => {
         let query = db.collection(SNIPPETS_COLLECTION).where('creatorId', '==', req.userAuth.userId);
         if (visibility) query = query.where('visibility', '==', visibility);
         const snapshot = await query.orderBy('createdAt', 'desc').limit(limit).get();
-        const snippets = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const snippets = snapshot.docs.map(doc => {
+             const data = doc.data();
+             // Chuyển đổi Timestamp thành ISO string
+             if (data.createdAt && data.createdAt.toDate) {
+                data.createdAt = data.createdAt.toDate().toISOString();
+             }
+             if (data.expiresAt && data.expiresAt.toDate) {
+                 data.expiresAt = data.expiresAt.toDate().toISOString();
+             }
+            return { id: doc.id, ...data };
+        });
         return res.status(200).send(snippets);
     } catch (error) {
+         console.error("Lỗi route /listSnippets:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi liệt kê snippets.' });
     }
 });
@@ -217,49 +309,120 @@ app.post('/getUserPublicSnippets', async (req, res) => {
             .orderBy('createdAt', 'desc')
             .limit(20)
             .get();
-        const snippets = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const snippets = snapshot.docs.map(doc => {
+            const data = doc.data();
+             // Chuyển đổi Timestamp thành ISO string
+             if (data.createdAt && data.createdAt.toDate) {
+                data.createdAt = data.createdAt.toDate().toISOString();
+             }
+             if (data.expiresAt && data.expiresAt.toDate) {
+                 data.expiresAt = data.expiresAt.toDate().toISOString();
+             }
+            return { id: doc.id, ...data };
+        });
         return res.status(200).send(snippets);
     } catch (error) {
+         console.error("Lỗi route /getUserPublicSnippets:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi lấy public snippets.' });
     }
 });
 
+
+// --- CẬP NHẬT ROUTE /searchSnippets ---
 app.post('/searchSnippets', async (req, res) => {
+    // Kiểm tra xem OpenSearch client đã khởi tạo chưa
+    if (!osClient) {
+        return res.status(503).send({ error: 'Dịch vụ tìm kiếm hiện không khả dụng.' });
+    }
+
     try {
         const { term } = req.body;
-        if (!term) return res.status(400).send({ error: 'Thiếu từ khóa tìm kiếm.' });
-        
-        const lowerCaseTerm = term.toLowerCase();
-        
-        const tagsQuery = db.collection(SNIPPETS_COLLECTION)
-            .where('visibility', '==', 'public')
-            .where('tags', 'array-contains', lowerCaseTerm);
-            
-        // Firestore không hỗ trợ OR query phức tạp. Chúng ta sẽ chạy 2 query và gộp kết quả.
-        // Đây là cách đơn giản nhất, với lượng dữ liệu lớn cần giải pháp tìm kiếm chuyên dụng hơn (เช่น Algolia, Typesense).
-        const titleQuery = db.collection(SNIPPETS_COLLECTION)
-             .where('visibility', '==', 'public');
+        const size = parseInt(req.body.size, 10) || 20; // Lấy size từ request hoặc mặc định 20
+        const from = parseInt(req.body.from, 10) || 0;   // Lấy from (offset) từ request hoặc mặc định 0
 
-        const [tagsSnapshot, titleSnapshot] = await Promise.all([tagsQuery.get(), titleQuery.get()]);
+        if (!term || typeof term !== 'string' || term.trim() === '') {
+            return res.status(400).send({ error: 'Thiếu hoặc không hợp lệ: term (từ khóa tìm kiếm).' });
+        }
 
-        const resultsMap = new Map();
-        tagsSnapshot.docs.forEach(doc => resultsMap.set(doc.id, { id: doc.id, ...doc.data() }));
-        
-        // Lọc title thủ công vì Firestore không hỗ trợ contains/lowercase search
-        titleSnapshot.docs.forEach(doc => {
-            const data = doc.data();
-            if (data.title && data.title.toLowerCase().includes(lowerCaseTerm)) {
-                 resultsMap.set(doc.id, { id: doc.id, ...data });
-            }
+        const searchTerm = term.trim();
+        const indexName = process.env.OPENSEARCH_INDEX || 'snippets';
+
+        // Tạo query body cho OpenSearch
+        const queryBody = {
+            size: size,
+            from: from,
+            query: {
+                bool: {
+                    must: [ // Phải khớp với từ khóa
+                        {
+                            multi_match: {
+                                query: searchTerm,
+                                fields: [
+                                    "title^3",          // Ưu tiên khớp tiêu đề
+                                    "content",
+                                    "tags^2",           // Ưu tiên khớp tags
+                                    "language",
+                                    "creatorName",
+                                    "ai_assessment"
+                                ],
+                                fuzziness: "AUTO",      // Cho phép lỗi chính tả nhỏ
+                                operator: "OR"
+                            }
+                        }
+                    ],
+                    filter: [ // Chỉ lấy các snippet công khai và chưa hết hạn
+                        { term: { "visibility.keyword": "public" } } // Giả sử visibility được map là keyword
+                        // Bỏ filter expiresAt ở đây để đơn giản, worker đã lọc trước khi index
+                        // Nếu cần lọc tại thời điểm query:
+                        // {
+                        //     range: {
+                        //         expiresAt: {
+                        //             gte: "now", // 'now' hoạt động với kiểu 'date' trong OpenSearch
+                        //             format: "strict_date_optional_time||epoch_millis"
+                        //         }
+                        //     }
+                        // }
+                    ]
+                }
+            },
+            sort: [
+                { "_score": { "order": "desc" } },      // Sắp xếp theo độ liên quan trước
+                { "ai_priority": { "order": "desc", "missing": "_last" } }, // Rồi đến độ ưu tiên AI
+                { "createdAt": { "order": "desc" } }     // Cuối cùng là ngày tạo
+            ],
+            // Không cần highlight ở đây vì API chỉ trả về dữ liệu JSON
+        };
+
+        console.log("OpenSearch Query:", JSON.stringify(queryBody, null, 2));
+
+        // Thực hiện tìm kiếm
+        const response = await osClient.search({
+            index: indexName,
+            body: queryBody,
         });
-        
-        const results = Array.from(resultsMap.values());
-        return res.status(200).send(results);
+
+        console.log("OpenSearch Response:", JSON.stringify(response.body.hits, null, 2));
+
+        // Xử lý kết quả
+        const results = response.body.hits.hits.map(hit => ({
+            id: hit._id, // Sử dụng _id từ OpenSearch (chính là Firestore ID)
+            ...hit._source // Lấy toàn bộ dữ liệu từ _source
+        }));
+
+        return res.status(200).send({
+             hits: results,
+             total: response.body.hits.total.value, // Tổng số kết quả khớp
+             from: from,
+             size: size
+         });
+
     } catch (error) {
-        console.error("Lỗi route /searchSnippets:", error);
-        return res.status(500).send({ error: 'Lỗi máy chủ khi tìm kiếm.' });
+        console.error("Lỗi route /searchSnippets:", error.meta ? error.meta.body : error);
+        // Trả về lỗi chi tiết hơn nếu có từ OpenSearch
+        const errorMessage = error.meta?.body?.error?.reason || 'Lỗi máy chủ khi tìm kiếm.';
+        return res.status(500).send({ error: errorMessage });
     }
 });
 
-// --- 4. EXPORT APP CHO VERCEL ---
+// --- 5. EXPORT APP CHO VERCEL ---
 module.exports = app;
