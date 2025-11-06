@@ -73,6 +73,23 @@ if (process.env.OPENSEARCH_HOST) {
     console.warn("⚠️ OpenSearch environment variables not set. Search functionality will be disabled.");
 }
 
+// --- 2.5. KHỞI TẠO REDIS CLIENT ---
+const Redis = require('ioredis');
+const CACHE_TTL_SECONDS = 60; // Thời gian sống của cache là 60 giây
+
+let redisClient = null;
+if (process.env.REDIS_URL) {
+    try {
+        redisClient = new Redis(process.env.REDIS_URL);
+        redisClient.on('error', (err) => console.error("❌ Redis Error:", err));
+        console.log("Redis client initialized successfully.");
+    } catch (e) {
+        console.error("❌ Failed to initialize Redis client:", e);
+    }
+} else {
+    console.warn("⚠️ REDIS_URL environment variable not set. Caching functionality will be disabled.");
+}
+
 
 // --- 3. MIDDLEWARE ---
 app.use(cors());
@@ -330,21 +347,37 @@ app.post('/getUserPublicSnippets', async (req, res) => {
 
 // --- CẬP NHẬT ROUTE /searchSnippets ---
 app.post('/searchSnippets', async (req, res) => {
-    // Kiểm tra xem OpenSearch client đã khởi tạo chưa
     if (!osClient) {
         return res.status(503).send({ error: 'Dịch vụ tìm kiếm hiện không khả dụng.' });
     }
 
     try {
         const { term } = req.body;
-        const size = parseInt(req.body.size, 10) || 20; // Lấy size từ request hoặc mặc định 20
-        const from = parseInt(req.body.from, 10) || 0;   // Lấy from (offset) từ request hoặc mặc định 0
+        const size = parseInt(req.body.size, 10) || 20;
+        const from = parseInt(req.body.from, 10) || 0;
 
         if (!term || typeof term !== 'string' || term.trim() === '') {
             return res.status(400).send({ error: 'Thiếu hoặc không hợp lệ: term (từ khóa tìm kiếm).' });
         }
 
         const searchTerm = term.trim();
+        const cacheKey = `search:${searchTerm}:size${size}:from${from}`;
+
+        // 1. KIỂM TRA CACHE TRƯỚC
+        if (redisClient) {
+            try {
+                const cachedResults = await redisClient.get(cacheKey);
+                if (cachedResults) {
+                    console.log("CACHE HIT:", cacheKey);
+                    return res.status(200).send(JSON.parse(cachedResults));
+                }
+                console.log("CACHE MISS:", cacheKey);
+            } catch (err) {
+                console.error("Redis GET error:", err);
+                // Không chặn request nếu Redis lỗi, chỉ log lại
+            }
+        }
+
         const indexName = process.env.OPENSEARCH_INDEX || 'snippets';
 
         // Tạo query body cho OpenSearch
@@ -353,68 +386,72 @@ app.post('/searchSnippets', async (req, res) => {
             from: from,
             query: {
                 bool: {
-                    must: [ // Phải khớp với từ khóa
+                    should: [
+                        // 1. Multi Match (Tìm kiếm chung, có fuzziness)
                         {
                             multi_match: {
                                 query: searchTerm,
                                 fields: [
-                                    "title^3",          // Ưu tiên khớp tiêu đề
-                                    "content",
-                                    "tags^2",           // Ưu tiên khớp tags
-                                    "language",
-                                    "creatorName",
-                                    "ai_assessment"
+                                    "title^5",      // Tăng boost cho title (rất quan trọng)
+                                    "tags^3",       // Tăng boost cho tags
+                                    "content^1",    // Giữ content ở mức cơ bản
+                                    "creatorName"
                                 ],
-                                fuzziness: "AUTO",      // Cho phép lỗi chính tả nhỏ
+                                fuzziness: "AUTO",  // Cho phép lỗi chính tả nhỏ
                                 operator: "OR"
+                            }
+                        },
+                        // 2. Phrase Prefix Match (Tìm kiếm gợi ý/autocomplete)
+                        {
+                            multi_match: {
+                                query: searchTerm,
+                                type: "phrase_prefix", // Giúp tìm thấy các snippet có cụm từ bắt đầu bằng searchTerm
+                                fields: ["title^10", "tags^5"], // Tăng boost mạnh cho kết quả khớp cụm từ
                             }
                         }
                     ],
-                    filter: [ // Chỉ lấy các snippet công khai và chưa hết hạn
-                        { term: { "visibility.keyword": "public" } } // Giả sử visibility được map là keyword
-                        // Bỏ filter expiresAt ở đây để đơn giản, worker đã lọc trước khi index
-                        // Nếu cần lọc tại thời điểm query:
-                        // {
-                        //     range: {
-                        //         expiresAt: {
-                        //             gte: "now", // 'now' hoạt động với kiểu 'date' trong OpenSearch
-                        //             format: "strict_date_optional_time||epoch_millis"
-                        //         }
-                        //     }
-                        // }
+                    minimum_should_match: 1, // Chỉ cần khớp 1 trong các điều kiện 'should'
+                    filter: [
+                        { term: { "visibility.keyword": "public" } }
                     ]
                 }
             },
+            // Giữ nguyên logic sắp xếp
             sort: [
-                { "_score": { "order": "desc" } },      // Sắp xếp theo độ liên quan trước
-                { "ai_priority": { "order": "desc", "missing": "_last" } }, // Rồi đến độ ưu tiên AI
-                { "createdAt": { "order": "desc" } }     // Cuối cùng là ngày tạo
+                { "_score": { "order": "desc" } },
+                { "ai_priority": { "order": "desc", "missing": "_last" } },
+                { "createdAt": { "order": "desc" } }
             ],
-            // Không cần highlight ở đây vì API chỉ trả về dữ liệu JSON
         };
 
-        console.log("OpenSearch Query:", JSON.stringify(queryBody, null, 2));
-
-        // Thực hiện tìm kiếm
         const response = await osClient.search({
             index: indexName,
             body: queryBody,
         });
 
-        console.log("OpenSearch Response:", JSON.stringify(response.body.hits, null, 2));
-
-        // Xử lý kết quả
         const results = response.body.hits.hits.map(hit => ({
-            id: hit._id, // Sử dụng _id từ OpenSearch (chính là Firestore ID)
-            ...hit._source // Lấy toàn bộ dữ liệu từ _source
+            id: hit._id,
+            ...hit._source
         }));
 
-        return res.status(200).send({
-             hits: results,
-             total: response.body.hits.total.value, // Tổng số kết quả khớp
-             from: from,
-             size: size
-         });
+        const finalResponse = {
+            hits: results,
+            total: response.body.hits.total.value,
+            from: from,
+            size: size
+        };
+
+        // 2. LƯU KẾT QUẢ VÀO CACHE
+        if (redisClient) {
+            try {
+                await redisClient.set(cacheKey, JSON.stringify(finalResponse), 'EX', CACHE_TTL_SECONDS);
+                console.log("CACHE SET:", cacheKey);
+            } catch (err) {
+                console.error("Redis SET error:", err);
+            }
+        }
+
+        return res.status(200).send(finalResponse);
 
     } catch (error) {
         console.error("Lỗi route /searchSnippets:", error.meta ? error.meta.body : error);
