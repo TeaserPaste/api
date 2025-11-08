@@ -1,4 +1,4 @@
-# TeaserPaste Platform, Inc. - API Backend
+# TeaserPaste - API Backend
 
 Đây là mã nguồn cho dịch vụ API backend của nền tảng dán/chia sẻ mã TeaserPaste. API này được thiết kế để hoạt động không trạng thái và tối ưu cho việc triển khai trên các nền tảng Serverless như Vercel.
 
