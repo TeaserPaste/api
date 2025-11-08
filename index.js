@@ -283,8 +283,11 @@ app.delete('/deleteSnippet', async (req, res) => {
         const docSnap = await snippetRef.get();
         if (!docSnap.exists) return res.status(404).send({ error: 'Snippet không tồn tại.' });
         if (docSnap.data().creatorId !== req.userAuth.userId) return res.status(403).send({ error: 'Bạn không có quyền xóa snippet này.' });
-        await snippetRef.delete();
-        return res.status(200).send({ message: `Snippet '${snippetId}' đã được xóa thành công.` });
+        
+        // Thay vì xóa hẳn, chuyển visibility sang "deleted" (Soft Delete)
+        await snippetRef.update({ visibility: 'deleted' }); // Thay thế await snippetRef.delete();
+
+        return res.status(200).send({ message: `Snippet '${snippetId}' đã được đánh dấu là bị xóa (visibility: deleted).` });
     } catch (error) {
         console.error("Lỗi route /deleteSnippet:", error);
         return res.status(500).send({ error: 'Lỗi máy chủ khi xóa snippet.' });
