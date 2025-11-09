@@ -8,7 +8,7 @@
 | :--- | :--- |
 | **Ngôn ngữ** | JavaScript (Node.js) / CommonJS |
 | **Framework** | Express |
-| **Database** | Google Cloud Firestore (Thông qua Firebase Admin SDK) |
+| **Database** | Google Cloud Firestore **và Realtime Database (RTDB)** (Thông qua Firebase Admin SDK) |
 | **Tìm kiếm** | OpenSearch |
 | **Caching/Queue** | Redis (Thông qua ioredis) |
 | **Triển khai** | Vercel Serverless Function |
@@ -27,6 +27,6 @@ Dự án này tuân thủ nguyên tắc bảo mật bằng cách sử dụng **B
 
 ## 📝 Tài liệu API
 
-Để biết chi tiết về các endpoint API (`/getSnippet`, `/createSnippet`, `/searchSnippets`, v.v.) và cách xác thực bằng Public/Private Key, vui lòng tham khảo tài liệu kỹ thuật chính thức.
+Để biết chi tiết về các endpoint API (`/getSnippet`, `/createSnippet`, `/searchSnippets`, `/starSnippet`, `/copySnippet`, `/restoreSnippet`, v.v.) và cách xác thực bằng Public/Private Key, vui lòng tham khảo tài liệu kỹ thuật chính thức.
 
 **Tài liệu Chi tiết:** [https://docs.teaserverse.online/triple-tool/teaserpaste/api](https://docs.teaserverse.online/triple-tool/teaserpaste/api)
