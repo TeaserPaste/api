@@ -1,32 +1,32 @@
 # TeaserPaste - API Backend
 
-Đây là mã nguồn cho dịch vụ API backend của nền tảng dán/chia sẻ mã TeaserPaste. API này được thiết kế để hoạt động không trạng thái và tối ưu cho việc triển khai trên các nền tảng Serverless như Vercel.
+This is the source code for the API backend service of the TeaserPaste code-pasting/sharing platform. This API is designed to be stateless and optimized for deployment on Serverless platforms like Vercel.
 
-## ⚙️ Cấu trúc và Công nghệ
+## Architecture and Technology
 
-| Mục | Chi tiết |
+| Item | Details |
 | :--- | :--- |
-| **Ngôn ngữ** | JavaScript (Node.js) / CommonJS |
+| **Language** | JavaScript (Node.js) / CommonJS |
 | **Framework** | Express |
-| **Database** | Google Cloud Firestore **và Realtime Database (RTDB)** (Thông qua Firebase Admin SDK) |
-| **Tìm kiếm** | OpenSearch |
-| **Caching/Queue** | Redis (Thông qua ioredis) |
-| **Triển khai** | Vercel Serverless Function |
+| **Database** | Google Cloud Firestore **and Realtime Database (RTDB)** (Via Firebase Admin SDK) |
+| **Search** | OpenSearch |
+| **Caching/Queue** | Redis (via `ioredis`) |
+| **Deployment** | Vercel Serverless Function |
 
-## 🛡️ Vấn đề Bảo mật và Cấu hình
+## Security and Configuration
 
-Dự án này tuân thủ nguyên tắc bảo mật bằng cách sử dụng **Biến Môi Trường (Environment Variables)** để quản lý tất cả các thông tin nhạy cảm và khóa truy cập (secrets).
+This project adheres to security principles by using **Environment Variables** to manage all sensitive information and access keys (secrets).
 
-### Các biến môi trường chính:
+### Main environment variables:
 
-* **Firebase Admin SDK:** `FIREBASE_PROJECT_ID`, `FIREBASE_PRIVATE_KEY`, v.v.
-* **OpenSearch:** `OPENSEARCH_HOST`, `OPENSEARCH_USER`, `OPENSEARCH_PASSWORD`, v.v.
+* **Firebase Admin SDK:** `FIREBASE_PROJECT_ID`, `FIREBASE_PRIVATE_KEY`, etc.
+* **OpenSearch:** `OPENSEARCH_HOST`, `OPENSEARCH_USER`, `OPENSEARCH_PASSWORD`, etc.
 * **Redis:** `REDIS_URL`
 
-**Lưu ý:** Các file chứa giá trị bí mật như `.env` đã được liệt kê trong `.gitignore` và sẽ không được công khai trong repository này.
+**Note:** Files containing secret values, such as `.env`, are listed in `.gitignore` and will not be made public in this repository.
 
-## 📝 Tài liệu API
+## 📝 API Documentation
 
-Để biết chi tiết về các endpoint API (`/getSnippet`, `/createSnippet`, `/searchSnippets`, `/starSnippet`, `/copySnippet`, `/restoreSnippet`, v.v.) và cách xác thực bằng Public/Private Key, vui lòng tham khảo tài liệu kỹ thuật chính thức.
+For details on API endpoints (`/getSnippet`, `/createSnippet`, `/searchSnippets`, `/starSnippet`, `/copySnippet`, `/restoreSnippet`, etc.) and how to authenticate using Public/Private Keys, please refer to the official technical documentation.
 
-**Tài liệu Chi tiết:** [https://docs.teaserverse.online/triple-tool/teaserpaste/api](https://docs.teaserverse.online/triple-tool/teaserpaste/api)
+**Detailed Documentation:** [https://docs.teaserverse.online/triple-tool/teaserpaste/api](https://docs.teaserverse.online/triple-tool/teaserpaste/api)
