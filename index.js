@@ -190,7 +190,7 @@ app.post('/getSnippet', async (req, res) => {
     if (!snippetId) return res.status(400).send({ error: 'Missing snippetId.' });
 
     try {
-        const docRef = db.collection(SNIPPETS_COLlection).doc(snippetId);
+        const docRef = db.collection(SNIPPETS_COLLECTION).doc(snippetId);
         const docSnap = await docRef.get();
 
         if (!docSnap.exists) return res.status(404).send({ error: `Snippet '${snippetId}' does not exist.` });
