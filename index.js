@@ -84,7 +84,7 @@ if (process.env.OPENSEARCH_HOST && process.env.OPENSEARCH_USER && process.env.OP
 
 // --- 2.5. INITIALIZE REDIS CLIENT ---
 const VIEW_TIMEOUT_MS = 300000; // 5 minutes (from use-view-snippet.ts)
-const CACHE_TTL_SECONDS = 60; // 60 seconds for search cache
+const CACHE_TTL_SECONDS = 300; // 300 seconds for search cache
 
 let redisClient = null;
 if (process.env.REDIS_URL) {
@@ -710,7 +710,9 @@ app.post('/searchSnippets', async (req, res) => {
                 const cachedResults = await redisClient.get(cacheKey);
                 if (cachedResults) {
                     console.log("CACHE HIT:", cacheKey);
-                    return res.status(200).send(JSON.parse(cachedResults));
+                    let responseData = JSON.parse(cachedResults);
+                    responseData.additional = { cache: 'hit' }; 
+                    return res.status(200).send(responseData);
                 }
                 console.log("CACHE MISS:", cacheKey);
             } catch (err) {
@@ -729,7 +731,7 @@ app.post('/searchSnippets', async (req, res) => {
                         {
                             multi_match: {
                                 query: searchTerm,
-                                fields: ["title^5", "tags^3", "content^1", "creatorName"],
+                                fields: ["title^5", "tags^3", "creatorName"], 
                                 fuzziness: "AUTO",
                                 operator: "OR"
                             }
@@ -762,7 +764,8 @@ app.post('/searchSnippets', async (req, res) => {
                 { "ai_priority": { "order": "desc", "missing": "_last" } },
                 { "createdAt": { "order": "desc" } }
             ],
-            // Add highlight (optional)
+            // Highlight feature (Optional)
+            /*
              highlight: {
                 pre_tags: ["<mark>"],
                 post_tags: ["</mark>"],
@@ -771,6 +774,7 @@ app.post('/searchSnippets', async (req, res) => {
                     "content": {}
                 }
             }
+            */
         };
 
         const response = await osClient.search({
@@ -781,19 +785,21 @@ app.post('/searchSnippets', async (req, res) => {
         const results = response.body.hits.hits.map(hit => ({
             id: hit._id,
             ...hit._source,
-            highlight: hit.highlight // Add highlight
+            // highlight: hit.highlight 
         }));
 
         const finalResponse = {
             hits: results,
             total: response.body.hits.total.value,
             from: from,
-            size: size
+            size: size,
+            additional: { cache: 'miss' }
         };
 
         // 2. SAVE RESULTS TO CACHE
         if (redisClient) {
             try {
+                // Requirement 3: Use CACHE_TTL_SECONDS (now set to 300)
                 await redisClient.set(cacheKey, JSON.stringify(finalResponse), 'EX', CACHE_TTL_SECONDS);
                 console.log("CACHE SET:", cacheKey);
             } catch (err) {
