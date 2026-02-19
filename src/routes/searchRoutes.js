@@ -10,7 +10,7 @@ router.post('/searchSnippets', async (req, res) => {
     try {
         const { term } = req.body;
         // const size = parseInt(req.body.size, 10) || 20; // Pagination logic for Firestore is different (startAfter)
-        // Ignoring 'from' and 'size' as strictly implemented for OpenSearch pagination for now, 
+        // Ignoring 'from' and 'size' as strictly implemented for pagination for now, 
         // or implementing basic limit. 
         // Let's implement basic limit.
         const size = parseInt(req.body.size, 10) || 20;

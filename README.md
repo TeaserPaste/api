@@ -9,7 +9,7 @@ This is the source code for the API backend service of the TeaserPaste code-past
 | **Language** | JavaScript (Node.js) / CommonJS |
 | **Framework** | Express |
 | **Database** | Google Cloud Firestore **and Realtime Database (RTDB)** (Via Firebase Admin SDK) |
-| **Search** | OpenSearch |
+| **Search** | Firestore (Direct Query) |
 | **Caching/Queue** | Redis (via `ioredis`) |
 | **Deployment** | Vercel Serverless Function |
 
@@ -20,7 +20,6 @@ This project adheres to security principles by using **Environment Variables** t
 ### Main environment variables:
 
 * **Firebase Admin SDK:** `FIREBASE_PROJECT_ID`, `FIREBASE_PRIVATE_KEY`, etc.
-* **OpenSearch:** `OPENSEARCH_HOST`, `OPENSEARCH_USER`, `OPENSEARCH_PASSWORD`, etc.
 * **Redis:** `REDIS_URL`
 
 **Note:** Files containing secret values, such as `.env`, are listed in `.gitignore` and will not be made public in this repository.
@@ -29,4 +28,4 @@ This project adheres to security principles by using **Environment Variables** t
 
 For details on API endpoints (`/getSnippet`, `/createSnippet`, `/searchSnippets`, `/starSnippet`, `/copySnippet`, `/restoreSnippet`, etc.) and how to authenticate using Public/Private Keys, please refer to the official technical documentation.
 
-**Detailed Documentation:** [https://docs.teaserverse.online/triple-tool/teaserpaste/api](https://docs.teaserverse.online/triple-tool/teaserpaste/api)
+**Detailed Documentation:** [https://paste.teaserverse.online/docs/api](https://paste.teaserverse.online/docs/api)
