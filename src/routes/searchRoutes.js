@@ -19,7 +19,12 @@ router.post('/searchSnippets', async (req, res) => {
             return res.status(400).send({ error: 'Missing or invalid: term (search keyword).' });
         }
 
-        const searchTerm = term.trim();
+        if (term.length > 100) {
+            return res.status(400).send({ error: 'term must be 100 characters or less.' });
+        }
+
+        const trimmedTerm = term.trim();
+        const searchTerm = trimmedTerm.replace(/\s+/g, ' ').toLowerCase();
         const cacheKey = `search:${searchTerm}:size${size}:from${from}`;
 
         // 1. CHECK CACHE FIRST
@@ -28,9 +33,8 @@ router.post('/searchSnippets', async (req, res) => {
                 const cachedResults = await redisClient.get(cacheKey);
                 if (cachedResults) {
                     console.log("CACHE HIT:", cacheKey);
-                    let responseData = JSON.parse(cachedResults);
-                    responseData.additional = { cache: 'hit' }; 
-                    return res.status(200).send(responseData);
+                    res.setHeader('X-Cache', 'HIT');
+                    return res.status(200).type('json').send(cachedResults);
                 }
                 console.log("CACHE MISS:", cacheKey);
             } catch (err) {
@@ -43,6 +47,7 @@ router.post('/searchSnippets', async (req, res) => {
         const queryBody = {
             size: size,
             from: from,
+            _source: ["title", "tags", "creatorName", "createdAt"],
             query: {
                 bool: {
                     should: [
@@ -70,7 +75,7 @@ router.post('/searchSnippets', async (req, res) => {
                             bool: {
                                 should: [
                                     { bool: { must_not: { exists: { field: "expiresAt" } } } }, // Or does not exist
-                                    { range: { expiresAt: { gt: "now/ms" } } } // Or greater than now
+                                    { range: { expiresAt: { gt: "now/m" } } } // Or greater than now
                                 ]
                             }
                         }
