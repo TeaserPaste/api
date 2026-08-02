@@ -47,7 +47,6 @@ router.post('/searchSnippets', async (req, res) => {
         const queryBody = {
             size: size,
             from: from,
-            _source: ["title", "tags", "creatorName", "createdAt"],
             query: {
                 bool: {
                     should: [
