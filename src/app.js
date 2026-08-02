@@ -49,4 +49,6 @@ app.use(userRoutes);
 app.use(interactionRoutes);
 app.use(searchRoutes);
 
+app.set('trust proxy', 1);
+
 module.exports = app;

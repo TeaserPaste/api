@@ -34,7 +34,13 @@ router.post('/searchSnippets', async (req, res) => {
                 if (cachedResults) {
                     console.log("CACHE HIT:", cacheKey);
                     res.setHeader('X-Cache', 'HIT');
-                    return res.status(200).type('json').send(cachedResults);
+
+                    const parsedData = JSON.parse(cachedResults);
+                    if (parsedData.additional) {
+                        parsedData.additional.cache = 'hit';
+                    }
+
+                    return res.status(200).json(parsedData);
                 }
                 console.log("CACHE MISS:", cacheKey);
             } catch (err) {
