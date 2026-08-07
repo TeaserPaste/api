@@ -144,4 +144,74 @@ router.post('/searchSnippets', async (req, res) => {
     }
 });
 
+const fetchSnippetHandler = async (req, res) => {
+    if (!osClient) {
+        return res.status(503).send({ error: 'Search service is currently unavailable.' });
+    }
+
+    try {
+        const id = req.body.id || req.query.id || req.body.snippetId || req.query.snippetId;
+        const fields = req.body.fields || req.query.fields;
+
+        if (!id || typeof id !== 'string' || id.trim() === '') {
+            return res.status(400).send({ error: 'Missing or invalid: id.' });
+        }
+
+        const trimmedId = id.trim();
+        let sourceFiltering = true;
+
+        if (fields) {
+            if (Array.isArray(fields)) {
+                sourceFiltering = fields;
+            } else if (typeof fields === 'string') {
+                sourceFiltering = fields.split(',').map(f => f.trim()).filter(Boolean);
+            }
+        }
+
+        if (Array.isArray(sourceFiltering) && sourceFiltering.length === 0) {
+            sourceFiltering = true;
+        }
+
+        const getParams = {
+            index: process.env.OPENSEARCH_INDEX || 'snippets',
+            id: trimmedId,
+        };
+
+        if (sourceFiltering !== true) {
+            getParams._source = sourceFiltering;
+        }
+
+        const response = await osClient.get(getParams);
+
+        if (response.body && response.body.found) {
+            return res.status(200).send({
+                id: response.body._id,
+                ...response.body._source
+            });
+        } else {
+            return res.status(404).send({ error: `Snippet '${trimmedId}' not found.` });
+        }
+
+    } catch (error) {
+        const is404 = error.status === 404 || 
+                      error.statusCode === 404 || 
+                      error.meta?.statusCode === 404 || 
+                      error.meta?.status === 404;
+
+        if (is404) {
+            const id = req.body.id || req.query.id || req.body.snippetId || req.query.snippetId;
+            const trimmedId = typeof id === 'string' ? id.trim() : '';
+            return res.status(404).send({ error: `Snippet '${trimmedId}' not found.` });
+        }
+
+        console.error("Error in route /fetchSnippet:", error.meta ? error.meta.body : error.message);
+        const errorMessage = error.meta?.body?.error?.reason || 'Server error while fetching snippet.';
+        return res.status(500).send({ error: errorMessage });
+    }
+};
+
+router.post('/fetchSnippet', fetchSnippetHandler);
+router.get('/fetchSnippet', fetchSnippetHandler);
+
 module.exports = router;
+
