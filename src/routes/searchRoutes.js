@@ -150,8 +150,8 @@ const fetchSnippetHandler = async (req, res) => {
     }
 
     try {
-        const id = req.body.id || req.query.id || req.body.snippetId || req.query.snippetId;
-        const fields = req.body.fields || req.query.fields;
+        const id = req.query.id || req.query.snippetId || req.body?.id || req.body?.snippetId;
+        const fields = req.body?.fields || req.query?.fields;
 
         if (!id || typeof id !== 'string' || id.trim() === '') {
             return res.status(400).send({ error: 'Missing or invalid: id.' });
