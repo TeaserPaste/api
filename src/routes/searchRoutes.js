@@ -172,6 +172,28 @@ const fetchSnippetHandler = async (req, res) => {
             sourceFiltering = true;
         }
 
+        // Sort fields to make cacheKey deterministic
+        let cacheFields = sourceFiltering;
+        if (Array.isArray(cacheFields)) {
+            cacheFields = [...cacheFields].sort();
+        }
+        const cacheKey = `snippet:${trimmedId}:fields:${JSON.stringify(cacheFields)}`;
+
+        // 1. CHECK CACHE FIRST
+        if (redisClient) {
+            try {
+                const cachedSnippet = await redisClient.get(cacheKey);
+                if (cachedSnippet) {
+                    console.log("CACHE HIT:", cacheKey);
+                    res.setHeader('X-Cache', 'HIT');
+                    return res.status(200).json(JSON.parse(cachedSnippet));
+                }
+                console.log("CACHE MISS:", cacheKey);
+            } catch (err) {
+                console.error("Redis GET error:", err.message);
+            }
+        }
+
         const getParams = {
             index: process.env.OPENSEARCH_INDEX || 'snippets',
             id: trimmedId,
@@ -184,10 +206,23 @@ const fetchSnippetHandler = async (req, res) => {
         const response = await osClient.get(getParams);
 
         if (response.body && response.body.found) {
-            return res.status(200).send({
+            const responseData = {
                 id: response.body._id,
                 ...response.body._source
-            });
+            };
+
+            // 2. SAVE TO CACHE (TTL 30 seconds)
+            if (redisClient) {
+                try {
+                    await redisClient.set(cacheKey, JSON.stringify(responseData), 'EX', 30);
+                    console.log("CACHE SET:", cacheKey);
+                } catch (err) {
+                    console.error("Redis SET error:", err.message);
+                }
+            }
+
+            res.setHeader('X-Cache', 'MISS');
+            return res.status(200).send(responseData);
         } else {
             return res.status(404).send({ error: `Snippet '${trimmedId}' not found.` });
         }
